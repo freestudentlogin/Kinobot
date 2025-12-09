@@ -1,193 +1,92 @@
 import logging
-import os
+import sqlite3
 import re
+import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from telegram.constants import ParseMode
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
 
-# ========== CONFIGURATION ==========
-TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# ========== RAILWAY CONFIGURATION ==========
+# Environment variables dan olish
+TOKEN = os.environ.get("BOT_TOKEN", "8071915816:AAE6VGglu3WBnxXtu3_UZfYJ8prVhvqVRSo")
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "@uzkinolarbot_manba")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "7901013364"))
 
-# Debug uchun
-print("=" * 50)
-print(f"TOKEN mavjud: {'Ha' if TOKEN else 'Yoq'}")
-print(f"CHANNEL_USERNAME: {CHANNEL_USERNAME}")
-print(f"ADMIN_ID: {ADMIN_ID}")
-print(f"DATABASE_URL mavjud: {'Ha' if DATABASE_URL else 'Yoq'}")
-print("=" * 50)
+# Baza faylini Railway da saqlash (ephemeral storage uchun)
+DB_PATH = os.environ.get("DB_PATH", "films.db")
 
-if not TOKEN:
-    print("❌ BOT_TOKEN environment variable topilmadi!")
-    exit(1)
+# Railway port
+PORT = int(os.environ.get("PORT", 8080))
 
-if not DATABASE_URL:
-    print("❌ DATABASE_URL environment variable topilmadi!")
-    exit(1)
-
-# ========== BOT CONFIG ==========
+# ========== BOT CONFIGURATION ==========
 UPLOAD_FILE, GET_NAME, GET_CODE = range(3)
 
-# Logging
+# Logging setup for Railway
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ========== DATABASE FUNCTIONS ==========
-def get_db_connection():
-    """PostgreSQL ulanishini olish"""
-    try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-        return conn
-    except Exception as e:
-        logger.error(f"Database connection error: {e}")
-        print(f"❌ Database connection failed: {e}")
-        return None
-
-def init_database():
-    """PostgreSQL bazasini yaratish"""
-    try:
-        conn = get_db_connection()
-        if not conn:
-            print("❌ Database connection failed")
-            return False
-        
-        cur = conn.cursor()
-        
-        # Jadvalni yaratish
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS films (
-                id SERIAL PRIMARY KEY,
-                code VARCHAR(50) UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                file_id TEXT NOT NULL,
-                file_type VARCHAR(20) NOT NULL,
-                duration VARCHAR(20),
-                message_id INTEGER NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Index lar
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_films_code ON films(code)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_films_created ON films(created_at DESC)')
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        print("✅ Database initialized successfully")
-        logger.info("Database initialized")
-        return True
-    except Exception as e:
-        print(f"❌ Database initialization error: {e}")
-        logger.error(f"Database init error: {e}")
-        return False
-
 # ========== HELPER FUNCTIONS ==========
-def safe_html(text):
-    """HTML uchun xavfsiz matn"""
-    if not text:
+def safe_sql(text):
+    """SQL uchun xavfsiz matn yaratish"""
+    if text is None:
         return ""
+    
+    text = str(text)
+    text = text.replace("'", "''")
+    text = text.replace('"', '""')
+    text = text.replace(';', '')
+    text = text.replace('--', '')
+    text = text.replace('#', '№')
+    text = text.replace('%', '%%')
+    text = text.replace('_', '\_')
+    text = re.sub(r'[\x00-\x1F\x7F]', '', text)
+    return text.strip()
+
+def safe_html(text):
+    """HTML uchun xavfsiz matn yaratish"""
+    if text is None:
+        return ""
+    
     text = str(text)
     text = text.replace('&', '&amp;')
     text = text.replace('<', '&lt;')
     text = text.replace('>', '&gt;')
+    text = text.replace('"', '&quot;')
+    text = text.replace("'", '&#39;')
     return text
 
-# ========== DATABASE OPERATIONS ==========
-def film_exists(code):
-    """Kod mavjudligini tekshirish"""
+def init_database():
+    """Ma'lumotlar bazasini yaratish"""
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT 1 FROM films WHERE code = %s", (code,))
-        exists = cur.fetchone() is not None
-        cur.close()
-        conn.close()
-        return exists
-    except Exception as e:
-        logger.error(f"Film exists check error: {e}")
-        return False
-
-def add_film(code, name, file_id, file_type, duration, message_id):
-    """Film qo'shish"""
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute('''
-            INSERT INTO films (code, name, file_id, file_type, duration, message_id)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        ''', (code, name, file_id, file_type, duration, message_id))
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        
+        # Faqat agar mavjud bo'lmasa yaratish
+        c.execute('''CREATE TABLE IF NOT EXISTS films
+                     (code TEXT PRIMARY KEY, 
+                      name TEXT,
+                      file_id TEXT,
+                      file_type TEXT,
+                      duration TEXT,
+                      message_id INTEGER,
+                      date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        
         conn.commit()
-        cur.close()
         conn.close()
+        logger.info("✅ Database initialized successfully")
         return True
     except Exception as e:
-        logger.error(f"Add film error: {e}")
+        logger.error(f"❌ Database initialization error: {e}")
         return False
-
-def get_film(code):
-    """Film olish"""
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT * FROM films WHERE code = %s", (code,))
-        film = cur.fetchone()
-        cur.close()
-        conn.close()
-        return film
-    except Exception as e:
-        logger.error(f"Get film error: {e}")
-        return None
-
-def get_all_films():
-    """Barcha filmlar"""
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT * FROM films ORDER BY created_at DESC")
-        films = cur.fetchall()
-        cur.close()
-        conn.close()
-        return films
-    except Exception as e:
-        logger.error(f"Get all films error: {e}")
-        return []
-
-def delete_film(code):
-    """Film o'chirish"""
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # Avval filmni olish
-        cur.execute("SELECT * FROM films WHERE code = %s", (code,))
-        film = cur.fetchone()
-        
-        if film:
-            # Keyin o'chirish
-            cur.execute("DELETE FROM films WHERE code = %s", (code,))
-            conn.commit()
-        
-        cur.close()
-        conn.close()
-        return film
-    except Exception as e:
-        logger.error(f"Delete film error: {e}")
-        return None
 
 # ========== COMMAND HANDLERS ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start command handler"""
     user = update.effective_user
-    text = f"""🎬 Salom, {user.first_name}!
+    welcome_text = f"""🎬 Salom, {user.first_name}!
     
 Men film kodlari orqali kinolar topshiradigan botman.
 
@@ -195,64 +94,75 @@ Men film kodlari orqali kinolar topshiradigan botman.
 1. Film kodini yozing (masalan: <code>1234</code>)
 2. Men sizga shu kodli filmni yuboraman
 
-Admin panel: /admin
+📥 Admin panel: /admin
     """
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    """Admin panel handler"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
         await update.message.reply_text("❌ Siz admin emassiz!")
         return
     
-    text = """<b>⚙️ Admin Panel</b>
+    admin_text = """<b>⚙️ Admin Panel</b>
 
 📥 Film qo'shish: /addfilm
-📊 Filmlar ro'yxati: /listfilms
-🔎 Qidirish: /search [nomi]
-🗑️ O'chirish: /deletefilm [kod]
-📊 Statistika: /stats
+📊 Bazadagi filmlar: /listfilms
+🔎 Film qidirish: /search [nomi]
+🗑️ Film o'chirish: /deletefilm [kod]
+🧹 Bazani tozalash: /cleanup
+📈 Bot statistikasi: /stats
+
+<i>Misol:</i>
+/search Avatar
+/deletefilm H1
     """
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(admin_text, parse_mode=ParseMode.HTML)
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    """Bot statistikasi"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
         await update.message.reply_text("❌ Siz admin emassiz!")
         return
     
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM films")
-        total = cur.fetchone()[0]
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM films")
+        film_count = c.fetchone()[0]
         
-        cur.execute("SELECT COUNT(*) FROM films WHERE file_type = 'video'")
-        videos = cur.fetchone()[0]
+        c.execute("SELECT COUNT(DISTINCT file_type) FROM films")
+        type_count = c.fetchone()[0]
         
-        cur.execute("SELECT COUNT(*) FROM films WHERE file_type = 'document'")
-        documents = cur.fetchone()[0]
-        
-        cur.close()
         conn.close()
         
-        text = f"""<b>📊 Bot Statistikasi</b>
+        stats_text = f"""<b>📊 Bot Statistikasi</b>
 
-🎬 Jami filmlar: {total} ta
-🎥 Videolar: {videos} ta
-📄 Dokumentlar: {documents} ta
-📢 Kanal: {CHANNEL_USERNAME}
-🤖 Host: Railway + PostgreSQL
+🎬 <b>Filmlar soni:</b> {film_count}
+🎥 <b>Formatlar:</b> {type_count} tur
+📢 <b>Kanal:</b> {CHANNEL_USERNAME}
+👑 <b>Admin:</b> {ADMIN_ID}
+🤖 <b>Host:</b> Railway
+🔄 <b>Holat:</b> Faol
         """
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Xatolik: {str(e)}")
+        await update.message.reply_text(f"❌ Statistika olishda xatolik: {str(e)}")
 
 # ========== CONVERSATION HANDLERS ==========
 async def add_film_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
         await update.message.reply_text("❌ Siz admin emassiz!")
         return ConversationHandler.END
     
-    await update.message.reply_text("🎥 Film faylini yuboring (video yoki dokument)...")
+    await update.message.reply_text("🎥 Iltimos, film faylini yuboring.")
     return UPLOAD_FILE
 
 async def receive_film_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -260,32 +170,37 @@ async def receive_film_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = update.message.video.file_id
         file_type = "video"
         duration = update.message.video.duration
-        mins, secs = divmod(duration, 60)
-        hrs, mins = divmod(mins, 60)
-        duration_str = f"{hrs}:{mins:02d}:{secs:02d}" if hrs > 0 else f"{mins}:{secs:02d}"
+        minutes, seconds = divmod(duration, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            duration_str = f"{hours}:{minutes:02d}:{seconds:02d}"
+        else:
+            duration_str = f"{minutes}:{seconds:02d}"
         context.user_data['duration'] = duration_str
     elif update.message.document:
         file_id = update.message.document.file_id
         file_type = "document"
         context.user_data['duration'] = "Dokument"
     else:
-        await update.message.reply_text("❌ Video yoki dokument yuboring!")
+        await update.message.reply_text("❌ Iltimos, video yoki dokument fayl yuboring!")
         return UPLOAD_FILE
     
     context.user_data['file_id'] = file_id
     context.user_data['file_type'] = file_type
     
-    await update.message.reply_text("✅ Fayl qabul qilindi!\n\n📝 Film nomini yuboring:")
+    await update.message.reply_text("✅ Film qabul qilindi!\n\n📝 Endi film NOMINI yuboring:")
     return GET_NAME
 
 async def receive_film_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     film_name = update.message.text.strip()
+    
     if not film_name:
-        await update.message.reply_text("❌ Nom bo'sh bo'lmasligi kerak!")
+        await update.message.reply_text("❌ Film nomi bo'sh bo'lishi mumkin emas!")
         return GET_NAME
     
     context.user_data['film_name'] = film_name
-    await update.message.reply_text(f"✅ Nom saqlandi: {film_name}\n\n🔢 Film kodini yuboring:")
+    
+    await update.message.reply_text(f"✅ Film nomi saqlandi: {film_name}\n\n🔢 Endi film KODINI yuboring:")
     return GET_CODE
 
 async def receive_film_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -293,11 +208,23 @@ async def receive_film_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     film_name = context.user_data.get('film_name', 'Noma\'lum')
     
     if not code:
-        await update.message.reply_text("❌ Kod bo'sh bo'lmasligi kerak!")
+        await update.message.reply_text("❌ Kod bo'sh bo'lishi mumkin emas!")
         return GET_CODE
     
-    if film_exists(code):
-        await update.message.reply_text(f"❌ {code} kodi allaqachon mavjud!")
+    film_name_sql = safe_sql(film_name)
+    code_sql = safe_sql(code)
+    
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT * FROM films WHERE code = ?", (code_sql,))
+        if c.fetchone():
+            await update.message.reply_text(f"❌ {code} kodi allaqachon mavjud!\nBoshqa kod tanlang.")
+            conn.close()
+            return GET_CODE
+    except Exception as e:
+        await update.message.reply_text(f"❌ Bazada xatolik: {str(e)}")
+        conn.close()
         return GET_CODE
     
     try:
@@ -305,145 +232,283 @@ async def receive_film_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_type = context.user_data['file_type']
         duration = context.user_data.get('duration', 'Noma\'lum')
         
-        # Kanalga yuborish
-        caption = f"""🎬 <b>{safe_html(film_name)}</b>
+        film_name_safe = safe_html(film_name)
+        code_safe = safe_html(code)
+        
+        caption = f"""🎬 <b>{film_name_safe}</b>
 
-🔢 <b>Kod:</b> <code>{safe_html(code)}</code>
+🔢 <b>Kod:</b> <code>{code_safe}</code>
 🎥 <b>Format:</b> {file_type.upper()}
 ⏱️ <b>Davomiylik:</b> {duration}
 📥 <b>Bot:</b> @{context.bot.username}
 
-💾 Filmni olish uchun botga <code>{safe_html(code)}</code> deb yozing."""
-        
+💾 Filmni olish uchun botga <code>{code_safe}</code> deb yozing."""
+
         if file_type == "video":
-            sent = await context.bot.send_video(
+            sent_message = await context.bot.send_video(
                 chat_id=CHANNEL_USERNAME,
                 video=file_id,
                 caption=caption,
                 parse_mode=ParseMode.HTML
             )
-        else:
-            sent = await context.bot.send_document(
+        elif file_type == "document":
+            sent_message = await context.bot.send_document(
                 chat_id=CHANNEL_USERNAME,
                 document=file_id,
                 caption=caption,
                 parse_mode=ParseMode.HTML
             )
         
-        # Bazaga saqlash
-        if add_film(code, film_name, file_id, file_type, duration, sent.message_id):
-            await update.message.reply_text(
-                f"✅ <b>Film qo'shildi!</b>\n\n"
-                f"🎬 Nomi: {safe_html(film_name)}\n"
-                f"🔢 Kodi: <code>{safe_html(code)}</code>\n"
-                f"📢 Kanal: {CHANNEL_USERNAME}",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await update.message.reply_text("❌ Bazaga saqlashda xatolik!")
-    
+        c.execute("INSERT INTO films (code, name, file_id, file_type, duration, message_id) VALUES (?, ?, ?, ?, ?, ?)",
+                  (code_sql, film_name_sql, file_id, file_type, duration, sent_message.message_id))
+        conn.commit()
+        
+        await update.message.reply_text(
+            f"✅ <b>Film muvaffaqiyatli qo'shildi!</b>\n\n"
+            f"🎬 <b>Nomi:</b> {film_name_safe}\n"
+            f"🔢 <b>Kodi:</b> <code>{code_safe}</code>\n"
+            f"⏱️ <b>Davomiylik:</b> {duration}\n"
+            f"📤 <b>Kanal:</b> {CHANNEL_USERNAME}\n"
+            f"🔗 <b>Xabar ID:</b> {sent_message.message_id}",
+            parse_mode=ParseMode.HTML
+        )
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Xatolik: {str(e)}")
+        await update.message.reply_text(f"❌ Xatolik yuz berdi: {str(e)}")
+    finally:
+        conn.close()
     
     context.user_data.clear()
     return ConversationHandler.END
 
 # ========== OTHER HANDLERS ==========
 async def list_films(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
         await update.message.reply_text("❌ Siz admin emassiz!")
         return
     
-    films = get_all_films()
-    if not films:
-        await update.message.reply_text("📭 Hech qanday film yo'q.")
-        return
-    
-    text = "<b>📋 Filmlar ro'yxati:</b>\n\n"
-    for film in films:
-        text += f"• <code>{safe_html(film['code'])}</code> - {safe_html(film['name'])}\n"
-    
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
-async def send_film_by_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    code = update.message.text.strip().upper()
-    film = get_film(code)
-    
-    if not film:
-        await update.message.reply_text(f"❌ <code>{safe_html(code)}</code> kodi bilan film topilmadi!")
-        return
-    
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    c = conn.cursor()
     try:
-        if film['file_type'] == "video":
-            await update.message.reply_video(
-                video=film['file_id'],
-                caption=f"""✅ <b>{safe_html(film['name'])}</b>
-
-⏱️ <b>Davomiylik:</b> {film['duration']}
-
-🔢 <b>Kod:</b> <code>{safe_html(film['code'])}</code>
-
-📥 <b>Bot:</b> @{context.bot.username}""",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await update.message.reply_document(
-                document=film['file_id'],
-                caption=f"""✅ <b>{safe_html(film['name'])}</b>
-
-⏱️ <b>Davomiylik:</b> {film['duration']}
-
-🔢 <b>Kod:</b> <code>{safe_html(film['code'])}</code>
-
-📥 <b>Bot:</b> @{context.bot.username}""",
-                parse_mode=ParseMode.HTML
-            )
+        c.execute("SELECT code, name, file_type, duration, date_added FROM films ORDER BY date_added DESC")
+        films = c.fetchall()
     except Exception as e:
-        await update.message.reply_text(f"❌ Film yuborishda xatolik: {str(e)}")
+        await update.message.reply_text(f"❌ Bazada xatolik: {str(e)}")
+        conn.close()
+        return
+    
+    conn.close()
+    
+    if not films:
+        await update.message.reply_text("📭 Bazada hech qanday film yo'q.")
+        return
+    
+    films_list = "<b>📋 Bazadagi filmlar:</b>\n\n"
+    for film in films:
+        code_safe = safe_html(film[0])
+        name_safe = safe_html(film[1])
+        films_list += f"• <code>{code_safe}</code> - {name_safe} ({film[2]}, {film[3]}) - {film[4][:10]}\n"
+    
+    if len(films_list) > 4000:
+        parts = [films_list[i:i+4000] for i in range(0, len(films_list), 4000)]
+        for part in parts:
+            await update.message.reply_text(part, parse_mode=ParseMode.HTML)
+    else:
+        await update.message.reply_text(films_list, parse_mode=ParseMode.HTML)
 
-async def delete_film_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+async def search_film(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Iltimos, qidirish uchun so'z kiriting!\n\nMisol: /search Inception")
+        return
+    
+    search_term = " ".join(context.args)
+    
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT code, name, file_type, duration FROM films WHERE LOWER(name) LIKE ? OR LOWER(code) LIKE ?",
+                  (f"%{search_term.lower()}%", f"%{search_term.upper()}%"))
+        results = c.fetchall()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Bazada xatolik: {str(e)}")
+        conn.close()
+        return
+    
+    conn.close()
+    
+    if not results:
+        await update.message.reply_text(f"🔍 '{search_term}' bo'yicha hech narsa topilmadi.")
+        return
+    
+    search_results = f"<b>🔍 Qidiruv natijalari ('{safe_html(search_term)}'):</b>\n\n"
+    for result in results:
+        code_safe = safe_html(result[0])
+        name_safe = safe_html(result[1])
+        search_results += f"• <code>{code_safe}</code> - {name_safe} ({result[2]}, {result[3]})\n"
+    
+    await update.message.reply_text(search_results, parse_mode=ParseMode.HTML)
+
+async def delete_film(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
         await update.message.reply_text("❌ Siz admin emassiz!")
         return
     
     if not context.args:
-        await update.message.reply_text("❌ Kodni kiriting!\nMasalan: /deletefilm H1")
+        await update.message.reply_text("❌ Iltimos, film kodini kiriting!\n\nMisol: /deletefilm H1")
         return
     
-    code = context.args[0].upper()
-    film = delete_film(code)
+    code = safe_sql(context.args[0].upper())
     
-    if film:
-        try:
-            await context.bot.delete_message(
-                chat_id=CHANNEL_USERNAME,
-                message_id=film['message_id']
-            )
-            await update.message.reply_text(f"✅ <code>{safe_html(code)}</code> kodi bilan film o'chirildi!", parse_mode=ParseMode.HTML)
-        except:
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    c = conn.cursor()
+    
+    try:
+        c.execute("SELECT name, message_id FROM films WHERE code = ?", (code,))
+        film = c.fetchone()
+        
+        if film:
+            film_name, message_id = film
+            
+            try:
+                await context.bot.delete_message(
+                    chat_id=CHANNEL_USERNAME,
+                    message_id=message_id
+                )
+                channel_deleted = True
+            except:
+                channel_deleted = False
+            
+            c.execute("DELETE FROM films WHERE code = ?", (code,))
+            conn.commit()
+            
+            if channel_deleted:
+                await update.message.reply_text(
+                    f"✅ <b>Film to'liq o'chirildi!</b>\n\n"
+                    f"🎬 <b>Nomi:</b> {safe_html(film_name)}\n"
+                    f"🔢 <b>Kodi:</b> <code>{safe_html(code)}</code>",
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                await update.message.reply_text(
+                    f"⚠️ <b>Film qisman o'chirildi!</b>\n\n"
+                    f"🎬 <b>Nomi:</b> {safe_html(film_name)}\n"
+                    f"🔢 <b>Kodi:</b> <code>{safe_html(code)}</code>\n\n"
+                    f"<i>Kanaldagi postni qo'lda o'chiring.</i>",
+                    parse_mode=ParseMode.HTML
+                )
+        else:
             await update.message.reply_text(
-                f"⚠️ Film bazadan o'chirildi, lekin kanaldan o'chirish mumkin emas.\n"
-                f"Kanalda qo'lda o'chiring: {CHANNEL_USERNAME}",
+                f"❌ <code>{safe_html(code)}</code> kodi bilan film topilmadi!", 
                 parse_mode=ParseMode.HTML
             )
+    
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Xatolik yuz berdi: {str(e)}",
+            parse_mode=ParseMode.HTML
+        )
+    finally:
+        conn.close()
+
+async def send_film_by_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    code = update.message.text.strip().upper()
+    code_sql = safe_sql(code)
+    
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT name, file_id, file_type, duration FROM films WHERE code = ?", (code_sql,))
+        film = c.fetchone()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Bazada xatolik: {str(e)}")
+        conn.close()
+        return
+    
+    conn.close()
+    
+    if film:
+        film_name, file_id, file_type, duration = film
+        
+        duration_str = duration if duration else "Noma'lum"
+        film_name_safe = safe_html(film_name)
+        code_safe = safe_html(code)
+        
+        try:
+            if file_type == "video":
+                await update.message.reply_video(
+                    video=file_id,
+                    caption=f"""✅ <b>{film_name_safe}</b>
+
+⏱️ <b>Davomiylik:</b> {duration_str}
+
+🔢 <b>Kod:</b> <code>{code_safe}</code>
+
+📥 <b>Bot:</b> @{context.bot.username}""",
+                    parse_mode=ParseMode.HTML
+                )
+            elif file_type == "document":
+                await update.message.reply_document(
+                    document=file_id,
+                    caption=f"""✅ <b>{film_name_safe}</b>
+
+⏱️ <b>Davomiylik:</b> {duration_str}
+
+🔢 <b>Kod:</b> <code>{code_safe}</code>
+
+📥 <b>Bot:</b> @{context.bot.username}""",
+                    parse_mode=ParseMode.HTML
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Film yuborishda xatolik: {str(e)}")
     else:
-        await update.message.reply_text(f"❌ <code>{safe_html(code)}</code> kodi bilan film topilmadi!", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            f"❌ <code>{code_safe}</code> kodi bilan film topilmadi!",
+            parse_mode=ParseMode.HTML
+        )
+
+async def cleanup_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bazani to'liq tozalash"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Siz admin emassiz!")
+        return
+    
+    await update.message.reply_text("⚠️ <b>Baza tozalanmoqda...</b>", parse_mode=ParseMode.HTML)
+    
+    if init_database():
+        await update.message.reply_text(
+            "✅ <b>Baza muvaffaqiyatli tozalandi!</b>\n\n"
+            "🗄️ <b>Baza:</b> Yangilandi\n"
+            "📁 <b>Fayl:</b> films.db qayta yaratildi\n"
+            "🔧 <b>Holat:</b> Ishga tayyor",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await update.message.reply_text(
+            "❌ <b>Bazani tozalashda xatolik!</b>\n\n"
+            "films.db faylini qo'lda o'chiring.",
+            parse_mode=ParseMode.HTML
+        )
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Bekor qilindi.")
+    await update.message.reply_text("❌ Film qo'shish bekor qilindi.")
     context.user_data.clear()
     return ConversationHandler.END
 
-# ========== MAIN ==========
+# ========== MAIN FUNCTION ==========
 def main():
-    print("🚀 Bot ishga tushmoqda...")
-    
+    """Asosiy funksiya"""
     # Database initialization
     if not init_database():
-        print("❌ Database initialization failed!")
+        logger.error("❌ Failed to initialize database!")
         return
     
-    # Bot application
+    # Create application
     app = Application.builder().token(TOKEN).build()
     
     # Conversation handler
@@ -460,21 +525,30 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel)]
     )
     
-    # Handlers
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("listfilms", list_films))
-    app.add_handler(CommandHandler("deletefilm", delete_film_cmd))
+    app.add_handler(CommandHandler("search", search_film))
+    app.add_handler(CommandHandler("deletefilm", delete_film))
+    app.add_handler(CommandHandler("cleanup", cleanup_db))
     app.add_handler(conv_handler)
+    
+    # Message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, send_film_by_code))
     
-    # Start
-    print("🤖 Bot ishga tushdi!")
-    print(f"📢 Kanal: {CHANNEL_USERNAME}")
-    print(f"👑 Admin ID: {ADMIN_ID}")
+    # Start the bot
+    logger.info("🤖 Bot ishga tushdi...")
+    logger.info(f"👨‍💻 Admin ID: {ADMIN_ID}")
+    logger.info(f"📢 Kanal: {CHANNEL_USERNAME}")
+    logger.info(f"🗄️ Baza fayli: {DB_PATH}")
     
-    app.run_polling()
+    # Railway uchun polling
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_UPDATES
+    )
 
 if __name__ == '__main__':
     main()
