@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sqlite3
 import re
@@ -83,6 +84,12 @@ def init_database():
         return False
 
 # ========== COMMAND HANDLERS ==========
+async def main_webhook():
+    """Webhook version for Railway"""
+    # Create application
+    app = Application.builder().token(TOKEN).build()
+    
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
     user = update.effective_user
@@ -544,11 +551,19 @@ def main():
     logger.info(f"📢 Kanal: {CHANNEL_USERNAME}")
     logger.info(f"🗄️ Baza fayli: {DB_PATH}")
     
-    # Railway uchun polling
-    app.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_UPDATES
+    # Set webhook for Railway
+    webhook_url = f"https://{os.environ.get('RAILWAY_STATIC_URL', '')}/{TOKEN}"
+    
+    await app.initialize()
+    await app.bot.set_webhook(webhook_url)
+    # Start webhook
+    port = int(os.environ.get("PORT", 8080))
+    await app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=TOKEN,
+        webhook_url=webhook_url
     )
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main_webhook())
